@@ -6,6 +6,9 @@ use std::io::{Cursor, Read};
 
 /// GGUF file format parser
 /// Based on llama.cpp GGUF specification
+/// ref:    https://github.com/ggml-org/ggml/blob/master/docs/gguf.md
+/// source: https://github.com/ggml-org/ggml/blob/master/include/ggml.h
+///         https://github.com/ggml-org/ggml/blob/master/include/gguf.h
 pub struct GGUFFile {
     pub header: GGUFHeader,
     pub metadata: HashMap<String, GGUFValue>,
@@ -85,8 +88,7 @@ impl std::fmt::Display for MetadataType {
             MetadataType::I64 => "i64",
             MetadataType::F64 => "f64",
         };
-        write!(f, "{repr}");
-        Ok(())
+        write!(f, "{repr}")
     }
 }
 
@@ -116,6 +118,7 @@ pub enum GGMLType {
     F16 = 1,
     Q4_0 = 2,
     Q4_1 = 3,
+    // 4..5 removed
     Q5_0 = 6,
     Q5_1 = 7,
     Q8_0 = 8,
@@ -141,7 +144,15 @@ pub enum GGMLType {
     F64 = 28,
     IQ1_M = 29,
     BF16 = 30,
-    GGML_TYPE_Q1_58 = 36,
+    // 31..33 removed
+    TQ1_0 = 34,
+    TQ2_0 = 35,
+    // 36..38 removed
+    MXFP4 = 39, // MXFP4 (1 block)
+    NVFP4 = 40, // NVFP4 (4 blocks, E4M3 scale)
+    Q1_0 = 41,
+    Q2_0 = 42,
+    // GGML_TYPE_COUNT = 43
 }
 
 impl GGMLType {
@@ -151,6 +162,7 @@ impl GGMLType {
             1 => Some(GGMLType::F16),
             2 => Some(GGMLType::Q4_0),
             3 => Some(GGMLType::Q4_1),
+            // 4..5 removed
             6 => Some(GGMLType::Q5_0),
             7 => Some(GGMLType::Q5_1),
             8 => Some(GGMLType::Q8_0),
@@ -176,7 +188,14 @@ impl GGMLType {
             28 => Some(GGMLType::F64),
             29 => Some(GGMLType::IQ1_M),
             30 => Some(GGMLType::BF16),
-            36 => Some(GGMLType::GGML_TYPE_Q1_58),
+            // 31..33 removed
+            34 => Some(GGMLType::TQ1_0),
+            35 => Some(GGMLType::TQ2_0),
+            // 36..38 removed
+            39 => Some(GGMLType::MXFP4),
+            40 => Some(GGMLType::NVFP4),
+            41 => Some(GGMLType::Q1_0),
+            42 => Some(GGMLType::Q2_0),
             _ => None,
         }
     }
@@ -207,16 +226,27 @@ impl GGMLType {
             GGMLType::Q8_K => 1.140_625,   // 9.125  bpw
 
             // Importance‑quants (IQ‑family, super‑block 256)
-            GGMLType::IQ1_S => 0.195_312_5,      // 1.5625 bpw
-            GGMLType::IQ1_M => 0.218_75,         // 1.75   bpw
-            GGMLType::IQ2_XXS => 0.257_812_5,    // 2.0625 bpw
-            GGMLType::IQ2_XS => 0.289_062_5,     // 2.3125 bpw
-            GGMLType::IQ2_S => 0.3125,           // 2.5    bpw
-            GGMLType::IQ3_XXS => 0.382_812_5,    // 3.0625 bpw
-            GGMLType::IQ3_S => 0.429_687_5,      // 3.4375 bpw
-            GGMLType::IQ4_NL => 0.53125,         // 4.25   bpw
-            GGMLType::IQ4_XS => 0.53125,         // 4.25   bpw
-            GGMLType::GGML_TYPE_Q1_58 => 0.1975, // 1.58 / 8
+            GGMLType::IQ1_S => 0.195_312_5,   // 1.5625 bpw
+            GGMLType::IQ1_M => 0.218_75,      // 1.75   bpw
+            GGMLType::IQ2_XXS => 0.257_812_5, // 2.0625 bpw
+            GGMLType::IQ2_XS => 0.289_062_5,  // 2.3125 bpw
+            GGMLType::IQ2_S => 0.3125,        // 2.5    bpw
+            GGMLType::IQ3_XXS => 0.382_812_5, // 3.0625 bpw
+            GGMLType::IQ3_S => 0.429_687_5,   // 3.4375 bpw
+            GGMLType::IQ4_NL => 0.5625,       // 4.5    bpw, 18 / 32  bytes
+            GGMLType::IQ4_XS => 0.53125,      // 4.25   bpw
+
+            // TriLM & BitNet ternary‑quants (super‑block of 256 weights)
+            GGMLType::TQ1_0 => 0.210_937_5, // 1.6875 bpw, 54  / 256 bytes
+            GGMLType::TQ2_0 => 0.257_812_5, // 2.0625 bpw, 66  / 256 bytes
+
+            // Packed FP4 quants (micro‑exponent scales)
+            GGMLType::MXFP4 => 0.53125, // 4.25   bpw, 17  / 32  bytes
+            GGMLType::NVFP4 => 0.5625,  // 4.5    bpw, 36  / 64  bytes
+
+            // Sub‑2‑bit / 2‑bit Q‑quants
+            GGMLType::Q1_0 => 0.140_625, // 1.125  bpw, 18  / 128 bytes
+            GGMLType::Q2_0 => 0.28125,   // 2.25   bpw, 18  / 64  bytes
         }
     }
 }
@@ -244,6 +274,8 @@ impl std::fmt::Display for GGMLType {
             GGMLType::Q5_K => "Q5_K",
             GGMLType::Q6_K => "Q6_K",
             GGMLType::Q8_K => "Q8_K",
+            GGMLType::Q1_0 => "Q1_0",
+            GGMLType::Q2_0 => "Q2_0",
             GGMLType::IQ2_XXS => "IQ2_XXS",
             GGMLType::IQ2_XS => "IQ2_XS",
             GGMLType::IQ3_XXS => "IQ3_XXS",
@@ -253,7 +285,10 @@ impl std::fmt::Display for GGMLType {
             GGMLType::IQ2_S => "IQ2_S",
             GGMLType::IQ4_XS => "IQ4_XS",
             GGMLType::IQ1_M => "IQ1_M",
-            GGMLType::GGML_TYPE_Q1_58 => "Q1_58",
+            GGMLType::TQ1_0 => "TQ1_0",
+            GGMLType::TQ2_0 => "TQ2_0",
+            GGMLType::MXFP4 => "MXFP4",
+            GGMLType::NVFP4 => "NVFP4",
         };
         write!(f, "{s}")
     }
